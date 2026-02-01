@@ -34,12 +34,12 @@ class SRResNet(nn.Module):
             nn.BatchNorm2d(64)
         )
         
-        # Upsampling Logic: Turns 64 channels into 256 for PixelShuffle
+        # Upsampling Logic
         self.upsample = nn.Sequential(
             nn.Conv2d(64, 256, kernel_size=3, padding=1),
-            nn.PixelShuffle(upscale_factor), # 256 / 4^2 = 16 channels
+            nn.PixelShuffle(upscale_factor), # Channels drop from 256 -> 16
             nn.PReLU(),
-            nn.Conv2d(16, 3, kernel_size=9, padding=4) 
+            nn.Conv2d(16, 3, kernel_size=9, padding=4) # MUST BE 16, NOT 64
         )
 
     def forward(self, x):
