@@ -33,9 +33,9 @@ class SRResNet(nn.Module):
         # It turns a low-res pixel grid into a 4x sharper grid
         self.upsample = nn.Sequential(
             nn.Conv2d(64, 256, kernel_size=3, padding=1),
-            nn.PixelShuffle(upscale_factor), # This turns 256 channels into 16 channels (256 / 4^2)
+            nn.PixelShuffle(upscale_factor), # 256 becomes 16 channels here
             nn.PReLU(),
-            nn.Conv2d(16, 3, kernel_size=9, padding=4) # Change 64 to 16 here
+            nn.Conv2d(16, 3, kernel_size=9, padding=4) # This MUST start with 16
         )
     def forward(self, x):
         x = self.initial(x)
