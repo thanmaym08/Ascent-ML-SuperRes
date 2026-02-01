@@ -5,3 +5,10 @@ opencv-python
 rasterio
 earthengine-api
 matplotlib
+torch
+torchvision
+numpy
+opencv-python
+streamlit
+streamlit-image-comparison
+pillow
