@@ -1,67 +1,52 @@
-import streamlit as st
-from streamlit_image_comparison import image_comparison
-from PIL import Image
 import torch
-import numpy as np
-import os
-from model import SRResNet 
+import torch.nn as nn
 
-st.set_page_config(page_title="Klymo Ascent SR", layout="wide")
-st.title("🛰️ Satellite Super-Resolution: Sentinel-2 to HR")
+class RRDB(nn.Module):
+    """Residual in Residual Dense Block for high-fidelity 4K reconstruction."""
+    def __init__(self, channels, growth_channels=32):
+        super(RRDB, self).__init__()
+        self.conv1 = nn.Conv2d(channels, growth_channels, 3, 1, 1)
+        self.conv2 = nn.Conv2d(channels + growth_channels, growth_channels, 3, 1, 1)
+        self.conv3 = nn.Conv2d(channels + 2 * growth_channels, growth_channels, 3, 1, 1)
+        self.conv4 = nn.Conv2d(channels + 3 * growth_channels, growth_channels, 3, 1, 1)
+        self.conv5 = nn.Conv2d(channels + 4 * growth_channels, channels, 3, 1, 1)
+        self.lrelu = nn.LeakyReLU(negative_slope=0.2, inplace=True)
 
-# --- 🧠 Load the AI Brain ---
-@st.cache_resource
-def load_ai():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = SRResNet(upscale_factor=4)
-    # Ensure this file is in your F:\Ascent-ML folder!
-    model.load_state_dict(torch.load("super_res_final.pth", map_location=device))
-    model.to(device).eval()
-    return model, device
+    def forward(self, x):
+        x1 = self.lrelu(self.conv1(x))
+        x2 = self.lrelu(self.conv2(torch.cat((x, x1), 1)))
+        x3 = self.lrelu(self.conv3(torch.cat((x, x1, x2), 1)))
+        x4 = self.lrelu(self.conv4(torch.cat((x, x1, x2, x3), 1)))
+        x5 = self.conv5(torch.cat((x, x1, x2, x3, x4), 1))
+        # Residual scaling (0.2) ensures training stability and prevents 'burst' pixels
+        return x5 * 0.2 + x 
 
-model, device = load_ai()
+class AscentSR_Pro(nn.Module):
+    def __init__(self, upscale_factor=4):
+        super(AscentSR_Pro, self).__init__()
+        self.initial = nn.Conv2d(3, 64, 3, 1, 1)
+        
+        # 16 RRDB Blocks: Deep enough for 4x upscale without quality loss
+        self.body = nn.Sequential(*[RRDB(64) for _ in range(16)])
+        
+        self.conv_after_body = nn.Conv2d(64, 64, 3, 1, 1)
+        
+        # High-Performance Upsampling: Uses Bilinear + Conv to eliminate checkerboard grids
+        self.upsample = nn.Sequential(
+            nn.Upsample(scale_factor=upscale_factor, mode='bilinear', align_corners=False),
+            nn.Conv2d(64, 64, 3, 1, 1),
+            nn.LeakyReLU(negative_slope=0.2, inplace=True),
+            nn.Conv2d(64, 3, 3, 1, 1)
+        )
 
-# --- 🌍 Sidebar: City Selection & Upload ---
-st.sidebar.title("🌍 Control Panel")
-mode = st.sidebar.radio("Choose Mode:", ["City Gallery", "Manual Upload"])
-
-target_image = None
-
-if mode == "City Gallery":
-    city = st.sidebar.selectbox("Select a City:", ["Delhi", "New York", "Bengaluru"])
-    img_path = f"samples/{city.lower()}.png"
-    if os.path.exists(img_path):
-        target_image = Image.open(img_path).convert("RGB")
-    else:
-        st.sidebar.error(f"Please add {city.lower()}.png to your /samples folder!")
-
-else:
-    uploaded_file = st.sidebar.file_uploader("Upload Sentinel-2 patch", type=["jpg", "png"])
-    if uploaded_file:
-        target_image = Image.open(uploaded_file).convert("RGB")
-
-# --- ⚡ AI Processing Engine ---
-if target_image:
-    # 1. Prepare input
-    input_lr = target_image.resize((64, 64))
-    
-    # 2. Run Inference
-    img_tensor = torch.from_numpy(np.array(input_lr)).permute(2, 0, 1).float().unsqueeze(0).to(device) / 255.0
-    with torch.no_grad():
-        output_tensor = model(img_tensor)
-    
-    # 3. Prepare output
-    output_array = output_tensor.squeeze().permute(1, 2, 0).cpu().numpy()
-    output_array = np.clip(output_array, 0, 1)
-    sr_img = Image.fromarray((output_array * 255).astype(np.uint8))
-
-    # --- 🛰️ Display Result ---
-    st.write(f"### AI Reconstruction: {city if mode == 'City Gallery' else 'Uploaded Image'}")
-    image_comparison(
-       img1=input_lr.resize((512, 512), resample=Image.BILINEAR), 
-        img2=sr_img.resize((512, 512)), 
-        label1="Original Sentinel-2",
-        label2="Ascent-SR (AI Enhanced)",
-    )
-    
-    st.success("AI Enhancement Complete! Notice the sharper building edges and road networks.")
+    def forward(self, x):
+        # Global Residual Anchor: Ensures structural similarity to the original Sentinel-2 data
+        shortcut = torch.nn.functional.interpolate(x, scale_factor=4, mode='bicubic', align_corners=False)
+        
+        feat = self.initial(x)
+        res = self.body(feat)
+        res = self.conv_after_body(res)
+        
+        out = self.upsample(feat + res)
+        # Clamping here prevents "burst" pixels during training and inference
+        return torch.clamp(out + shortcut, 0, 1)
